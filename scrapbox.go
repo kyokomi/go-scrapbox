@@ -3,10 +3,14 @@ package scrapbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
+
+	"golang.org/x/xerrors"
 )
 
 const (
@@ -14,18 +18,22 @@ const (
 	baseURL  = "https://scrapbox.io/api/"
 )
 
+var (
+	errNotFound = errors.New("not found")
+)
+
 // Client scrapbox client
 type Client struct {
 	token      string
 	httpClient *http.Client
 
-	PageService *PageService
+	Page *PageService
 }
 
 // NewClient return a create Client
 func NewClient(token string) *Client {
 	c := &Client{token: token, httpClient: http.DefaultClient}
-	c.PageService = &PageService{Client: c}
+	c.Page = &PageService{Client: c}
 	return c
 }
 
@@ -53,19 +61,64 @@ func (c *Client) newRequest(ctx context.Context, method, url string, body io.Rea
 }
 
 func (c *Client) doAndJSONDecode(req *http.Request, v interface{}) error {
-	res, err := c.httpClient.Do(req)
+	res, err := c.doWithErrorHandling(req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode > 400 {
-		var errorResponse ErrorResponse
-		if err := json.NewDecoder(res.Body).Decode(&errorResponse); err != nil {
-			return err
-		}
-		return fmt.Errorf("status %d %s: %s", errorResponse.StatusCode, errorResponse.Name, errorResponse.Message)
+	return json.NewDecoder(res.Body).Decode(v)
+}
+
+func (c *Client) doAndGetText(req *http.Request) (string, error) {
+	res, err := c.doWithErrorHandling(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	data, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", err
 	}
 
-	return json.NewDecoder(res.Body).Decode(v)
+	return string(data), nil
+}
+
+func (c *Client) doAndGetRedirectURL(req *http.Request) (bool, *url.URL, error) {
+	res, err := c.doWithErrorHandling(req)
+	if err != nil {
+		if errors.Is(errNotFound, err) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+	defer res.Body.Close()
+
+	return true, res.Request.URL, nil
+}
+
+// required close
+func (c *Client) doWithErrorHandling(req *http.Request) (*http.Response, error) {
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("httpClient do request error: %w", err)
+	}
+
+	if res.StatusCode > 400 {
+		defer res.Body.Close()
+
+		if res.StatusCode == http.StatusNotFound {
+			return nil, errNotFound
+		}
+
+		var errorResponse ErrorResponse
+		if err := json.NewDecoder(res.Body).Decode(&errorResponse); err != nil {
+			data, _ := ioutil.ReadAll(res.Body)
+			return nil, xerrors.Errorf("status %d: %s", res.StatusCode, string(data))
+		}
+		return nil, xerrors.Errorf("status %d %s: %s", errorResponse.StatusCode, errorResponse.Name, errorResponse.Message)
+	}
+
+	return res, nil
 }

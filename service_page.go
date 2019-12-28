@@ -16,6 +16,35 @@ type PageService struct {
 }
 
 // List get page list
+func (s *PageService) ListAll(ctx context.Context, projectName string) (PageListResponse, error) {
+	const defaultLimit = uint(1000)
+
+	var allRes *PageListResponse
+	offset := uint(0)
+	for {
+		res, err := s.List(ctx, projectName, offset, defaultLimit)
+		if err != nil {
+			return PageListResponse{}, nil
+		}
+
+		if allRes == nil {
+			allRes = &res
+		} else {
+			allRes.Pages = append(allRes.Pages, res.Pages...)
+			allRes.Limit += res.Limit
+		}
+
+		if res.Count <= (res.Skip + res.Limit) {
+			break
+		}
+
+		offset += res.Limit
+	}
+
+	return *allRes, nil
+}
+
+// List get page list
 func (s *PageService) List(ctx context.Context, projectName string, offset, limit uint) (PageListResponse, error) {
 	u, err := s.Client.createURL("pages", projectName)
 	if err != nil {
